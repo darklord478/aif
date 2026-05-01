@@ -1,10 +1,10 @@
-name: Smart Downloader Pro
+name: Ultra Zip Engine 🚀
 
 on:
   workflow_dispatch:
     inputs:
       links:
-        description: "Enter links (one per line)"
+        description: "Paste links separated by *"
         required: true
       password:
         description: "Zip Password (optional)"
@@ -17,31 +17,44 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      # نصب ابزارها
       - name: Install tools
         run: |
           sudo apt update
-          sudo apt install -y zip wget
+          sudo apt install -y aria2 zip
 
-      - name: Prepare
-        run: mkdir files output
-
-      # حذف لینک تکراری
-      - name: Deduplicate
+      # پردازش لینک‌ها (پشتیبانی از *)
+      - name: Fix & Deduplicate links
         run: |
           echo "${{ github.event.inputs.links }}" > raw.txt
-          awk '!seen[$0]++' raw.txt > links.txt
 
-      # دانلود و زیپ مستقل
-      - name: Download & Zip
+          # تبدیل * به خط جدید
+          tr '*' '\n' < raw.txt > step1.txt
+
+          # حذف فاصله‌های اضافی
+          sed 's/^ *//;s/ *$//' step1.txt > step2.txt
+
+          # حذف خالی + فقط لینک معتبر + حذف تکراری
+          grep -E '^https?://' step2.txt | awk '!seen[$0]++' > links.txt
+
+          echo "=== FINAL LINKS ==="
+          cat links.txt
+
+      # دانلود سریع با aria2
+      - name: Download files (FAST)
         run: |
+          mkdir files
+          aria2c -i links.txt -d files -x 16 -s 16 --auto-file-renaming=false
+
+      # زیپ جداگانه برای هر فایل
+      - name: Zip each file
+        run: |
+          mkdir output
           PASS="${{ github.event.inputs.password }}"
           i=1
 
-          while read url; do
-            [ -z "$url" ] && continue
-
-            FILE="files/file_$i"
-            wget -O "$FILE" "$url" || continue
+          for file in files/*; do
+            [ -f "$file" ] || continue
 
             RAND=$(head /dev/urandom | tr -dc a-z0-9 | head -c 5)
             DATE=$(date +"%Y%m%d_%H%M%S")
@@ -49,26 +62,27 @@ jobs:
             NAME="output/${RAND}_${DATE}_part${i}.zip"
 
             if [ -z "$PASS" ]; then
-              zip -j "$NAME" "$FILE"
+              zip -j "$NAME" "$file"
             else
-              zip -j --password "$PASS" "$NAME" "$FILE"
+              zip -j --password "$PASS" "$NAME" "$file"
             fi
 
             i=$((i+1))
-          done < links.txt
+          done
 
-      # توضیح چرت
+      # توضیح رندوم
       - name: Fake description
         id: desc
         run: |
           TEXT=$(head /dev/urandom | tr -dc a-z | head -c 60)
           echo "desc=$TEXT" >> $GITHUB_OUTPUT
 
-      # ریلیز
-      - name: Release
+      # ساخت Release بدون خطا
+      - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          name: $(head /dev/urandom | tr -dc a-z0-9 | head -c 8)
+          name: release-${{ github.run_id }}
+          tag_name: tag-${{ github.run_id }}
           body: ${{ steps.desc.outputs.desc }}
           files: "output/*.zip"
         env:
