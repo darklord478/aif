@@ -1,0 +1,75 @@
+name: Smart Downloader Pro
+
+on:
+  workflow_dispatch:
+    inputs:
+      links:
+        description: "Enter links (one per line)"
+        required: true
+      password:
+        description: "Zip Password (optional)"
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install tools
+        run: |
+          sudo apt update
+          sudo apt install -y zip wget
+
+      - name: Prepare
+        run: mkdir files output
+
+      # حذف لینک تکراری
+      - name: Deduplicate
+        run: |
+          echo "${{ github.event.inputs.links }}" > raw.txt
+          awk '!seen[$0]++' raw.txt > links.txt
+
+      # دانلود و زیپ مستقل
+      - name: Download & Zip
+        run: |
+          PASS="${{ github.event.inputs.password }}"
+          i=1
+
+          while read url; do
+            [ -z "$url" ] && continue
+
+            FILE="files/file_$i"
+            wget -O "$FILE" "$url" || continue
+
+            RAND=$(head /dev/urandom | tr -dc a-z0-9 | head -c 5)
+            DATE=$(date +"%Y%m%d_%H%M%S")
+
+            NAME="output/${RAND}_${DATE}_part${i}.zip"
+
+            if [ -z "$PASS" ]; then
+              zip -j "$NAME" "$FILE"
+            else
+              zip -j --password "$PASS" "$NAME" "$FILE"
+            fi
+
+            i=$((i+1))
+          done < links.txt
+
+      # توضیح چرت
+      - name: Fake description
+        id: desc
+        run: |
+          TEXT=$(head /dev/urandom | tr -dc a-z | head -c 60)
+          echo "desc=$TEXT" >> $GITHUB_OUTPUT
+
+      # ریلیز
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: $(head /dev/urandom | tr -dc a-z0-9 | head -c 8)
+          body: ${{ steps.desc.outputs.desc }}
+          files: "output/*.zip"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
