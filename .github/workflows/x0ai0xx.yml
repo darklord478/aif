@@ -1,89 +1,143 @@
-name: Ultra Zip Engine 🚀
+name: 🚀 Smart Secure Release (Independent ZIPs)
 
 on:
-  workflow_dispatch:
-    inputs:
-      links:
-        description: "Paste links separated by *"
-        required: true
-      password:
-        description: "Zip Password (optional)"
-        required: false
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  job:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
 
-      # نصب ابزارها
-      - name: Install tools
+      - name: 🧠 Get Commit Message
+        id: commit
         run: |
-          sudo apt update
-          sudo apt install -y aria2 zip
+          echo "msg<<EOF" >> $GITHUB_OUTPUT
+          git log -1 --pretty=%B >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
-      # پردازش لینک‌ها (پشتیبانی از *)
-      - name: Fix & Deduplicate links
+      - name: 🔍 Extract URLs
+        id: extract
         run: |
-          echo "${{ github.event.inputs.links }}" > raw.txt
+          urls=$(echo "${{ steps.commit.outputs.msg }}" | grep -oP '(?<=release: ).*')
+          if [ -z "$urls" ]; then
+            echo "❌ no command"
+            exit 0
+          fi
+          echo "urls=$urls" >> $GITHUB_OUTPUT
 
-          # تبدیل * به خط جدید
-          tr '*' '\n' < raw.txt > step1.txt
-
-          # حذف فاصله‌های اضافی
-          sed 's/^ *//;s/ *$//' step1.txt > step2.txt
-
-          # حذف خالی + فقط لینک معتبر + حذف تکراری
-          grep -E '^https?://' step2.txt | awk '!seen[$0]++' > links.txt
-
-          echo "=== FINAL LINKS ==="
-          cat links.txt
-
-      # دانلود سریع با aria2
-      - name: Download files (FAST)
+      - name: ⚡ Install Tools
         run: |
-          mkdir files
-          aria2c -i links.txt -d files -x 16 -s 16 --auto-file-renaming=false
+          sudo apt-get update
+          sudo apt-get install -y aria2 p7zip-full bc
 
-      # زیپ جداگانه برای هر فایل
-      - name: Zip each file
+      - name: 📥 Download Files
         run: |
-          mkdir output
-          PASS="${{ github.event.inputs.password }}"
-          i=1
-
-          for file in files/*; do
-            [ -f "$file" ] || continue
-
-            RAND=$(head /dev/urandom | tr -dc a-z0-9 | head -c 5)
-            DATE=$(date +"%Y%m%d_%H%M%S")
-
-            NAME="output/${RAND}_${DATE}_part${i}.zip"
-
-            if [ -z "$PASS" ]; then
-              zip -j "$NAME" "$file"
-            else
-              zip -j --password "$PASS" "$NAME" "$file"
-            fi
-
-            i=$((i+1))
+          mkdir -p files
+          cd files
+          for url in ${{ steps.extract.outputs.urls }}
+          do
+            echo "⬇️ $url"
+            aria2c -x 16 -s 16 --continue=true "$url"
           done
 
-      # توضیح رندوم
-      - name: Fake description
-        id: desc
+      - name: 🇮🇷 Set Iran Time
+        id: time
         run: |
-          TEXT=$(head /dev/urandom | tr -dc a-z | head -c 60)
-          echo "desc=$TEXT" >> $GITHUB_OUTPUT
+          sudo timedatectl set-timezone Asia/Tehran
+          echo "date=$(date +"%Y.%m.%d-%H-%M")" >> $GITHUB_OUTPUT
 
-      # ساخت Release بدون خطا
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+      - name: 🔐 Hidden Password
+        id: pass
+        run: |
+          echo "pass=$(echo MTk5ODEzNzc= | base64 -d)" >> $GITHUB_OUTPUT
+
+      - name: 📦 Smart Independent ZIP Builder
+        id: zipstep
+        run: |
+          mkdir -p zips
+
+          PASS="${{ steps.pass.outputs.pass }}"
+          DATE="${{ steps.time.outputs.date }}"
+
+          # سایز رندوم بین 1500 تا 1700
+          TARGET=$((1500 + RANDOM % 200))
+          TARGET_BYTES=$((TARGET * 1024 * 1024))
+
+          PART=1
+          CURRENT_SIZE=0
+          FILE_COUNT=0
+          TOTAL_SIZE=0
+
+          declare -a FILE_LIST=()
+
+          create_zip () {
+            if [ ${#FILE_LIST[@]} -gt 0 ]; then
+              NAME="${DATE}-${PART}.zip"
+              echo "📦 Creating $NAME"
+
+              7z a -tzip -p"$PASS" -mem=AES256 "zips/$NAME" "${FILE_LIST[@]}"
+
+              PART=$((PART+1))
+              FILE_LIST=()
+              CURRENT_SIZE=0
+            fi
+          }
+
+          for file in files/*
+          do
+            [ -f "$file" ] || continue
+
+            SIZE=$(stat -c%s "$file")
+
+            if [ $((CURRENT_SIZE + SIZE)) -gt $TARGET_BYTES ]; then
+              create_zip
+            fi
+
+            FILE_LIST+=("$file")
+            CURRENT_SIZE=$((CURRENT_SIZE + SIZE))
+            TOTAL_SIZE=$((TOTAL_SIZE + SIZE))
+            FILE_COUNT=$((FILE_COUNT + 1))
+          done
+
+          create_zip
+
+          PARTS=$((PART-1))
+
+          GB=$(echo "$TOTAL_SIZE/1073741824" | bc)
+          MB=$(echo "($TOTAL_SIZE%1073741824)/1048576" | bc)
+
+          echo "files=$FILE_COUNT" >> $GITHUB_OUTPUT
+          echo "parts=$PARTS" >> $GITHUB_OUTPUT
+          echo "gb=$GB" >> $GITHUB_OUTPUT
+          echo "mb=$MB" >> $GITHUB_OUTPUT
+          echo "target=$TARGET" >> $GITHUB_OUTPUT
+
+      - name: 🏷 Create Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: release-${{ github.run_id }}
-          tag_name: tag-${{ github.run_id }}
-          body: ${{ steps.desc.outputs.desc }}
-          files: "output/*.zip"
+          tag_name: release-${{ github.run_id }}
+          name: 📦 Smart Release ${{ github.run_id }}
+          body: |
+            📦 تعداد فایل‌ها: ${{ steps.zipstep.outputs.files }}
+
+            🧩 تعداد پارت‌ها: ${{ steps.zipstep.outputs.parts }}
+
+            💾 حجم کل:
+            ${{ steps.zipstep.outputs.gb }} گیگ و ${{ steps.zipstep.outputs.mb }} مگ
+
+            📁 سایز هر پارت:
+            حدود ${{ steps.zipstep.outputs.target }} مگابایت
+
+            🇮🇷 زمان ساخت:
+            ${{ steps.time.outputs.date }}
+          files: zips/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
