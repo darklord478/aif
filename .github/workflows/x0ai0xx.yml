@@ -1,67 +1,104 @@
-      # زیپ جداگانه برای هر فایل + Smart Split
+name: Ultra Zip Engine 🚀
+
+on:
+  workflow_dispatch:
+    inputs:
+      links:
+        description: "Paste links separated by *"
+        required: true
+      password:
+        description: "Zip Password (optional)"
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      # نصب ابزارها
+      - name: Install tools
+        run: |
+          sudo apt update
+          sudo apt install -y aria2 zip
+
+      # پردازش لینک‌ها (پشتیبانی از *)
+      - name: Fix & Deduplicate links
+        run: |
+          echo "${{ github.event.inputs.links }}" > raw.txt
+
+          # تبدیل * به خط جدید
+          tr '*' '\n' < raw.txt > step1.txt
+
+          # حذف فاصله‌های اضافی
+          sed 's/^ *//;s/ *$//' step1.txt > step2.txt
+
+          # حذف خالی + فقط لینک معتبر + حذف تکراری
+          grep -E '^https?://' step2.txt | awk '!seen[$0]++' > links.txt
+
+          echo "=== FINAL LINKS ==="
+          cat links.txt
+
+      # دانلود سریع با aria2
+      - name: Download files (FAST)
+        run: |
+          mkdir files
+          aria2c -i links.txt -d files -x 16 -s 16 --auto-file-renaming=false
+
+      # زیپ جداگانه برای هر فایل
       - name: Zip each file
         run: |
           mkdir output
-
           PASS="${{ github.event.inputs.password }}"
           i=1
 
           for file in files/*; do
-
             [ -f "$file" ] || continue
 
             RAND=$(head /dev/urandom | tr -dc a-z0-9 | head -c 5)
             DATE=$(date +"%Y%m%d_%H%M%S")
 
-            BASENAME="${RAND}_${DATE}_part${i}"
+            BASE="output/${RAND}_${DATE}_part${i}"
 
             SIZE=$(stat -c%s "$file")
-            GB=$((SIZE / 1024 / 1024 / 1024))
-
-            echo "Processing: $file"
-            echo "Size: $GB GB"
 
             # اگر فایل بالای 2 گیگ بود
-            if [ $GB -ge 2 ]; then
-
-              echo "Large file detected -> Split ZIP 1GB"
+            if [ "$SIZE" -ge 2147483648 ]; then
 
               if [ -z "$PASS" ]; then
-
-                zip -j -s 1g \
-                  "output/${BASENAME}.zip" \
-                  "$file"
-
+                zip -j -s 1g "${BASE}.zip" "$file"
               else
-
-                zip -j -s 1g \
-                  --password "$PASS" \
-                  "output/${BASENAME}.zip" \
-                  "$file"
-
+                zip -j -s 1g --password "$PASS" "${BASE}.zip" "$file"
               fi
 
             else
 
-              echo "Normal ZIP"
-
               if [ -z "$PASS" ]; then
-
-                zip -j \
-                  "output/${BASENAME}.zip" \
-                  "$file"
-
+                zip -j "${BASE}.zip" "$file"
               else
-
-                zip -j \
-                  --password "$PASS" \
-                  "output/${BASENAME}.zip" \
-                  "$file"
-
+                zip -j --password "$PASS" "${BASE}.zip" "$file"
               fi
 
             fi
 
             i=$((i+1))
-
           done
+
+      # توضیح رندوم
+      - name: Fake description
+        id: desc
+        run: |
+          TEXT=$(head /dev/urandom | tr -dc a-z | head -c 60)
+          echo "desc=$TEXT" >> $GITHUB_OUTPUT
+
+      # ساخت Release بدون خطا
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: release-${{ github.run_id }}
+          tag_name: tag-${{ github.run_id }}
+          body: ${{ steps.desc.outputs.desc }}
+          files: "output/*"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
