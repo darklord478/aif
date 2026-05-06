@@ -6,7 +6,6 @@ on:
       links:
         description: "Paste links separated by *"
         required: true
-
       password:
         description: "Zip Password (optional)"
         required: false
@@ -16,373 +15,75 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v3
 
-      - name: Checkout
-        uses: actions/checkout@v3
-
-      #######################################################
-      # TIMEZONE
-      #######################################################
-
-      - name: Set Iran Timezone
+      # نصب ابزارها
+      - name: Install tools
         run: |
-          sudo timedatectl set-timezone Asia/Tehran
-          date
+          sudo apt update
+          sudo apt install -y aria2 zip
 
-      #######################################################
-      # INSTALL TOOLS
-      #######################################################
-
-      - name: Install Dependencies
+      # پردازش لینک‌ها (پشتیبانی از *)
+      - name: Fix & Deduplicate links
         run: |
-          sudo apt-get update
+          echo "${{ github.event.inputs.links }}" > raw.txt
 
-          sudo apt-get install -y \
-            aria2 \
-            p7zip-full \
-            zip \
-            unzip \
-            ffmpeg \
-            rename \
-            fdupes \
-            python3-pip
+          # تبدیل * به خط جدید
+          tr '*' '\n' < raw.txt > step1.txt
 
-          pip install \
-            jdatetime \
-            qrcode[pil] \
-            yt-dlp
+          # حذف فاصله‌های اضافی
+          sed 's/^ *//;s/ *$//' step1.txt > step2.txt
 
-      #######################################################
-      # CREATE FOLDERS
-      #######################################################
+          # حذف خالی + فقط لینک معتبر + حذف تکراری
+          grep -E '^https?://' step2.txt | awk '!seen[$0]++' > links.txt
 
-      - name: Create Directories
+          echo "=== FINAL LINKS ==="
+          cat links.txt
+
+      # دانلود سریع با aria2
+      - name: Download files (FAST)
         run: |
-          mkdir -p downloads
-          mkdir -p output
+          mkdir files
+          aria2c -i links.txt -d files -x 16 -s 16 --auto-file-renaming=false
 
-      #######################################################
-      # DOWNLOAD FILES
-      #######################################################
-
-      - name: Download Files
+      # زیپ جداگانه برای هر فایل
+      - name: Zip each file
         run: |
-          IFS='*' read -ra URLS <<< "${{ github.event.inputs.links }}"
+          mkdir output
+          PASS="${{ github.event.inputs.password }}"
+          i=1
 
-          for url in "${URLS[@]}"; do
-            echo "Downloading: $url"
+          for file in files/*; do
+            [ -f "$file" ] || continue
 
-            aria2c \
-              --continue=true \
-              --max-tries=10 \
-              --retry-wait=5 \
-              --split=16 \
-              --max-connection-per-server=16 \
-              --console-log-level=notice \
-              --dir=downloads \
-              "$url"
-          done
+            RAND=$(head /dev/urandom | tr -dc a-z0-9 | head -c 5)
+            DATE=$(date +"%Y%m%d_%H%M%S")
 
-      #######################################################
-      # REMOVE DUPLICATES
-      #######################################################
+            NAME="output/${RAND}_${DATE}_part${i}.zip"
 
-      - name: Remove Duplicate Files
-        run: |
-          fdupes -rdN downloads || true
-
-      #######################################################
-      # AUTO RENAME FILES
-      #######################################################
-
-      - name: Rename Files
-        run: |
-          cd downloads
-          rename 's/ /_/g' * || true
-
-      #######################################################
-      # YOUTUBE SUPPORT
-      #######################################################
-
-      - name: Download YouTube Links
-        run: |
-          IFS='*' read -ra URLS <<< "${{ github.event.inputs.links }}"
-
-          for url in "${URLS[@]}"; do
-
-            if [[ "$url" == *"youtube.com"* ]] || [[ "$url" == *"youtu.be"* ]]; then
-
-              yt-dlp \
-                -f best \
-                -o "downloads/%(title)s.%(ext)s" \
-                "$url"
-
-            fi
-
-          done
-
-      #######################################################
-      # CREATE VIDEO THUMBNAILS
-      #######################################################
-
-      - name: Generate Video Thumbnails
-        run: |
-          find downloads -type f \( -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.avi" \) | while read file; do
-
-            filename=$(basename "$file")
-
-            ffmpeg -y \
-              -i "$file" \
-              -ss 00:00:05 \
-              -vframes 1 \
-              "output/${filename}.jpg" || true
-
-          done
-
-      #######################################################
-      # CREATE VIDEO PREVIEWS
-      #######################################################
-
-      - name: Generate Video Previews
-        run: |
-          find downloads -type f \( -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.avi" \) | while read file; do
-
-            filename=$(basename "$file")
-
-            ffmpeg -y \
-              -i "$file" \
-              -vf scale=320:-1 \
-              -t 20 \
-              "output/preview_${filename}.mp4" || true
-
-          done
-
-      #######################################################
-      # SMART ZIP SPLIT
-      #######################################################
-
-      - name: Smart Zip Split
-        run: |
-
-          TOTAL_SIZE=$(du -sb downloads | cut -f1)
-          GB=$((TOTAL_SIZE / 1024 / 1024 / 1024))
-
-          echo "Total Size: $GB GB"
-
-          if [ $GB -lt 2 ]; then
-
-            echo "Creating Single ZIP"
-
-            if [ -n "${{ github.event.inputs.password }}" ]; then
-
-              7z a output/archive.zip downloads/* \
-                -p"${{ github.event.inputs.password }}" \
-                -mhe=on
-
+            if [ -z "$PASS" ]; then
+              zip -j "$NAME" "$file"
             else
-
-              7z a output/archive.zip downloads/*
-
+              zip -j --password "$PASS" "$NAME" "$file"
             fi
 
-          elif [ $GB -lt 20 ]; then
-
-            echo "Creating 500MB Split ZIP"
-
-            if [ -n "${{ github.event.inputs.password }}" ]; then
-
-              7z a output/archive.zip downloads/* \
-                -v500m \
-                -p"${{ github.event.inputs.password }}" \
-                -mhe=on
-
-            else
-
-              7z a output/archive.zip downloads/* -v500m
-
-            fi
-
-          else
-
-            echo "Creating 1GB Split ZIP"
-
-            if [ -n "${{ github.event.inputs.password }}" ]; then
-
-              7z a output/archive.zip downloads/* \
-                -v1g \
-                -p"${{ github.event.inputs.password }}" \
-                -mhe=on
-
-            else
-
-              7z a output/archive.zip downloads/* -v1g
-
-            fi
-
-          fi
-
-      #######################################################
-      # GENERATE SHA256
-      #######################################################
-
-      - name: Generate SHA256
-        run: |
-          cd output
-          sha256sum * > SHA256.txt || true
-
-      #######################################################
-      # GENERATE LINKS FILE
-      #######################################################
-
-      - name: Generate Links TXT
-        run: |
-          touch output/links.txt
-
-          for f in output/*; do
-            echo "$f" >> output/links.txt
+            i=$((i+1))
           done
 
-      #######################################################
-      # GENERATE QR CODE
-      #######################################################
-
-      - name: Generate QR Code
+      # توضیح رندوم
+      - name: Fake description
+        id: desc
         run: |
-          python3 << EOF
-          import qrcode
+          TEXT=$(head /dev/urandom | tr -dc a-z | head -c 60)
+          echo "desc=$TEXT" >> $GITHUB_OUTPUT
 
-          img = qrcode.make("GitHub Release Ready")
-          img.save("output/qrcode.png")
-          EOF
-
-      #######################################################
-      # GENERATE HTML PAGE
-      #######################################################
-
-      - name: Generate HTML Index
-        run: |
-          python3 << 'EOF'
-          import os
-          import hashlib
-          import jdatetime
-
-          now = jdatetime.datetime.now()
-
-          html = f'''
-          <html>
-          <head>
-            <meta charset="utf-8">
-            <title>Ultra Zip Engine</title>
-
-            <style>
-              body {{
-                background:#0d1117;
-                color:white;
-                font-family:Arial;
-                padding:40px;
-              }}
-
-              h1 {{
-                color:#58a6ff;
-              }}
-
-              table {{
-                width:100%;
-                border-collapse:collapse;
-                margin-top:20px;
-              }}
-
-              td,th {{
-                border:1px solid #30363d;
-                padding:12px;
-                text-align:left;
-              }}
-
-              th {{
-                background:#161b22;
-              }}
-
-              tr:hover {{
-                background:#161b22;
-              }}
-
-              .box {{
-                background:#161b22;
-                padding:20px;
-                border-radius:12px;
-                margin-bottom:20px;
-              }}
-            </style>
-
-          </head>
-
-          <body>
-
-            <h1>📦 Ultra Zip Engine Release</h1>
-
-            <div class="box">
-              <p>📅 Date: {now.strftime("%Y/%m/%d")}</p>
-              <p>🕒 Time: {now.strftime("%H:%M:%S")}</p>
-            </div>
-
-            <table>
-              <tr>
-                <th>File</th>
-                <th>Size</th>
-                <th>SHA256</th>
-              </tr>
-          '''
-
-          for file in os.listdir('output'):
-
-              path = os.path.join('output', file)
-
-              if os.path.isfile(path):
-
-                  size = round(os.path.getsize(path)/1024/1024,2)
-
-                  sha = hashlib.sha256(open(path,'rb').read()).hexdigest()
-
-                  html += f'''
-                  <tr>
-                    <td>{file}</td>
-                    <td>{size} MB</td>
-                    <td>{sha[:32]}...</td>
-                  </tr>
-                  '''
-
-          html += '''
-            </table>
-
-          </body>
-          </html>
-          '''
-
-          open('output/index.html','w',encoding='utf8').write(html)
-
-          EOF
-
-      #######################################################
-      # DELETE OLD RELEASES
-      #######################################################
-
-      - name: Delete Old Releases
-        uses: dev-drprasad/delete-older-releases@v0.2.1
-        with:
-          keep_latest: 5
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      #######################################################
-      # CREATE RELEASE
-      #######################################################
-
+      # ساخت Release بدون خطا
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: release-${{ github.run_id }}
-          name: Release-${{ github.run_id }}
-          files: output/*
-
+          name: release-${{ github.run_id }}
+          tag_name: tag-${{ github.run_id }}
+          body: ${{ steps.desc.outputs.desc }}
+          files: "output/*.zip"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
