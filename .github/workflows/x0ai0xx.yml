@@ -1,5 +1,4 @@
-      # زیپ جداگانه برای هر فایل + Smart Split
-      - name: Zip each file
+       name: Zip each file
         run: |
           mkdir output
           PASS="${{ github.event.inputs.password }}"
