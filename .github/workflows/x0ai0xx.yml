@@ -1,10 +1,13 @@
-       name: Zip each file
+      # زیپ جداگانه برای هر فایل + Smart Split
+      - name: Zip each file
         run: |
           mkdir output
+
           PASS="${{ github.event.inputs.password }}"
           i=1
 
           for file in files/*; do
+
             [ -f "$file" ] || continue
 
             RAND=$(head /dev/urandom | tr -dc a-z0-9 | head -c 5)
